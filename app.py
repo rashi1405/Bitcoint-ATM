@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 import random
+import requests
+import json
+import os
 
 # -----------------------------
 # Page Config
@@ -36,11 +39,53 @@ uploaded_file = st.sidebar.file_uploader("Upload Leads Excel", type=["xlsx"])
 POP_THRESHOLD = 10000   # Minimum population
 COMPETITOR_THRESHOLD = 2  # Max allowed ATMs nearby
 DISALLOWED_STATES = ["New York"]
+CENSUS_API_KEY = "709969d12c0868636e5253e3646270cc9f4de135"  # Replace with your real key
+CENSUS_DATA_FILE = "census_population_data.json"
 
 # -----------------------------
 # Helper Functions
 # -----------------------------
-@st.cache_data
+
+@st.cache_data(show_spinner=False)
+def fetch_and_store_census_data():
+    """
+    Fetch all ZIP code populations at once from Census API and store locally.
+    """
+    if os.path.exists(CENSUS_DATA_FILE):
+        st.info("✅ Using locally cached census population data.")
+        with open(CENSUS_DATA_FILE, "r") as f:
+            return json.load(f)
+
+    st.info("📡 Fetching population data for all ZIP codes from Census API...")
+
+    # Fetch entire ZIP-level dataset from Census
+    try:
+        url = f"https://api.census.gov/data/2020/acs/acs5?get=B01003_001E,NAME&for=zip%20code%20tabulation%20area:*&key={CENSUS_API_KEY}"
+        response = requests.get(url)
+
+        data = response.json()
+
+        # Convert API data to dict {zip: population}
+        # Example row: ["P1_001N", "NAME", "zip code tabulation area"]
+        headers = data[0]
+        rows = data[1:]
+        pop_data = {}
+        for row in rows:
+            population = int(row[0])
+            zip_code = row[2]
+            pop_data[zip_code] = population
+
+        with open(CENSUS_DATA_FILE, "w") as f:
+            json.dump(pop_data, f, indent=2)
+
+        st.success(f"✅ Census data saved locally with {len(pop_data)} ZIP codes.")
+        return pop_data
+
+    except Exception as e:
+        st.error(f"❌ Error fetching Census data: {e}")
+        return {}
+
+@st.cache_data(show_spinner=False)
 def get_competitor_count(zip_code):
     """Simulated competitor ATM count lookup."""
     return random.randint(0, 5)
@@ -58,15 +103,25 @@ if uploaded_file:
     st.markdown("### 📋 Uploaded Leads Preview")
     st.dataframe(df, use_container_width=True)
 
-    # Validate columns
-    required_cols = ["zip_code", "Blended Pop Estimate"]
+    required_cols = ["zip_code"]
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         st.error(f"❌ Missing required columns: {', '.join(missing)}")
         st.stop()
 
-    # Add derived columns
-    df["Population"] = df["Blended Pop Estimate"].fillna(0).astype(int)
+    # -----------------------------
+    # Load Census Population Data Once
+    # -----------------------------
+    census_data = fetch_and_store_census_data()
+    if not census_data:
+        st.error("❌ Could not load Census data.")
+        st.stop()
+
+    # Map population from pre-fetched census data
+    df["zip_code"] = df["zip_code"].astype(str).str.zfill(5)
+    df["Population"] = df["zip_code"].map(census_data).fillna(0).astype(int)
+
+    # Add competitors & AI call simulation
     df["Competitors"] = df["zip_code"].apply(get_competitor_count)
     df["AI_Call_Status"] = df.apply(ai_call_simulation, axis=1)
 
