@@ -37,10 +37,12 @@ uploaded_file = st.sidebar.file_uploader("Upload Leads Excel", type=["xlsx"])
 # Configs
 # -----------------------------
 POP_THRESHOLD = 10000   # Minimum population
-COMPETITOR_THRESHOLD = 2  # Max allowed ATMs nearby
+COMPETITOR_THRESHOLD = 1  # Max allowed ATMs nearby
 DISALLOWED_STATES = ["New York"]
 CENSUS_API_KEY = "709969d12c0868636e5253e3646270cc9f4de135"  # Replace with your real key
 CENSUS_DATA_FILE = "census_population_data.json"
+CACHED_RESULTS_FILE = "cached_results.json"
+
 
 # -----------------------------
 # Helper Functions
@@ -84,16 +86,75 @@ def fetch_and_store_census_data():
     except Exception as e:
         st.error(f"❌ Error fetching Census data: {e}")
         return {}
+    
+# @st.cache_data(show_spinner=False)
+# def get_competitor_count(zip_code):
+#     """
+#     Get competitor count for a ZIP code.
+#     1️⃣ Checks cached_results.json first.
+#     2️⃣ If not found, generates random count (0–4), saves it to cache, and returns it.
+#     """
+#     cache = {}
 
-@st.cache_data(show_spinner=False)
+#     # Load existing cache safely
+#     if os.path.exists(CACHED_RESULTS_FILE):
+#         try:
+#             with open(CACHED_RESULTS_FILE, "r") as f:
+#                 content = f.read().strip()
+#                 if content:
+#                     cache = json.loads(content)
+#         except json.JSONDecodeError:
+#             st.warning("⚠️ cached_results.json is invalid or empty — resetting cache.")
+#             cache = {}
+
+#     # Return cached value if found
+#     if zip_code in cache:
+#         return cache[zip_code]
+
+#     # Generate new random value
+#     competitor_count = random.randint(0, 4)
+#     cache[zip_code] = competitor_count
+
+#     # Write back safely (atomic write)
+#     temp_file = CACHED_RESULTS_FILE + ".tmp"
+#     with open(temp_file, "w") as f:
+#         json.dump(cache, f, indent=2)
+#     os.replace(temp_file, CACHED_RESULTS_FILE)
+
+#     return competitor_count
+
 def get_competitor_count(zip_code):
-    """Simulated competitor ATM count lookup."""
-    return random.randint(0, 5)
+    """
+    Returns competitor count for a given ZIP code.
+    - If found in cached_results.json, returns that value.
+    - Otherwise, generates a random value between 0–4.
+    """
+    cache_file = "cached_results.json"
 
-def ai_call_simulation(lead):
-    """Simulated AI call agent deciding if lead is 'interested'."""
-    score = random.uniform(0, 1)
-    return "Interested" if score > 0.4 else "Not Interested"
+    # Load the cache if it exists and is valid
+    cache = {}
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r") as f:
+                content = f.read().strip()
+                if content:
+                    cache = json.loads(content)
+        except json.JSONDecodeError:
+            print("⚠️ cached_results.json is invalid, skipping cache read.")
+            cache = {}
+
+    # Check if ZIP is present
+    if str(zip_code) in cache:
+        return cache[str(zip_code)]
+
+    # If not found, generate random count
+    return random.randint(0, 4)
+
+
+# def ai_call_simulation(lead):
+#     """Simulated AI call agent deciding if lead is 'interested'."""
+#     score = random.uniform(0, 1)
+#     return "Interested" if score > 0.4 else "Not Interested"
 
 # -----------------------------
 # Main Logic
@@ -123,7 +184,7 @@ if uploaded_file:
 
     # Add competitors & AI call simulation
     df["Competitors"] = df["zip_code"].apply(get_competitor_count)
-    df["AI_Call_Status"] = df.apply(ai_call_simulation, axis=1)
+    # df["AI_Call_Status"] = df.apply(ai_call_simulation, axis=1)
 
     # Filtering
     df["RejectedReason"] = ""
@@ -135,8 +196,8 @@ if uploaded_file:
             reasons.append("Low population")
         if row["Competitors"] > COMPETITOR_THRESHOLD:
             reasons.append("High market saturation")
-        if row["AI_Call_Status"] != "Interested":
-            reasons.append("Low interest")
+        # if row["AI_Call_Status"] != "Interested":
+        #     reasons.append("Low interest")
         if "State" in df.columns and row["State"] in DISALLOWED_STATES:
             reasons.append("State not allowed")
 
