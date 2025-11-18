@@ -1,263 +1,120 @@
 import streamlit as st
 import pandas as pd
-import random
 import requests
-import json
-import os
 
 # -----------------------------
 # Page Config
 # -----------------------------
-st.set_page_config(page_title="AI Lead Filtering & Qualification", layout="wide", page_icon="🤖")
+st.set_page_config(page_title="Bitcoin ATM Lead Qualification", layout="wide")
+
+st.title("🤖 Bitcoin ATM Lead Qualification (Simplified Version)")
+st.markdown("### Upload ZIP codes and auto-filter based on population")
 
 # -----------------------------
-# Header
+# Sidebar Upload
 # -----------------------------
-st.markdown("""
-<style>
-    .metric-container {
-        background-color: #f8f9fa;
-        padding: 15px;
-        border-radius: 12px;
-        box-shadow: 0 0 6px rgba(0,0,0,0.05);
-    }
-</style>
-""", unsafe_allow_html=True)
-
-st.title("🤖 Bitcoin ATM Lead Qualification POC")
-st.markdown("### AI system for pre-filtering and qualifying potential ATM locations")
+uploaded_file = st.sidebar.file_uploader("Upload Excel with ZIP Codes", type=["xlsx"])
 
 # -----------------------------
-# Sidebar
+# Census API Config
 # -----------------------------
-st.sidebar.header("📂 Upload Lead Data")
-uploaded_file = st.sidebar.file_uploader("Upload Leads Excel", type=["xlsx"])
+CENSUS_API_KEY = "709969d12c0868636e5253e3646270cc9f4de135"
+POP_THRESHOLD = 10000
 
 # -----------------------------
-# Configs
+# Function to Fetch Population for Single ZIP Code
 # -----------------------------
-POP_THRESHOLD = 10000   # Minimum population
-COMPETITOR_THRESHOLD = 1  # Max allowed ATMs nearby
-DISALLOWED_STATES = ["New York"]
-CENSUS_API_KEY = "709969d12c0868636e5253e3646270cc9f4de135"  # Replace with your real key
-CENSUS_DATA_FILE = "census_population_data.json"
-CACHED_RESULTS_FILE = "cached_results.json"
-
-
-# -----------------------------
-# Helper Functions
-# -----------------------------
-
-@st.cache_data(show_spinner=False)
-def fetch_and_store_census_data():
+def get_population(zip_code):
     """
-    Fetch all ZIP code populations at once from Census API and store locally.
+    Calls Census API for a single ZIP code and returns population.
     """
-    if os.path.exists(CENSUS_DATA_FILE):
-        st.info("✅ Using locally cached census population data.")
-        with open(CENSUS_DATA_FILE, "r") as f:
-            return json.load(f)
-
-    st.info("📡 Fetching population data for all ZIP codes from Census API...")
-
-    # Fetch entire ZIP-level dataset from Census
     try:
-        url = f"https://api.census.gov/data/2020/acs/acs5?get=B01003_001E,NAME&for=zip%20code%20tabulation%20area:*&key={CENSUS_API_KEY}"
+        # url = (
+        #     f"https://api.census.gov/data/2020/acs/acs5?"
+        #     f"get=B01003_001E&for=zip%20code%20tabulation%20area:{zip_code}"
+        #     f"&key={CENSUS_API_KEY}"
+        # ) 
+        url = (
+            "https://api.census.gov/data/2020/acs/acs5?"
+            "get=NAME,B01003_001E"
+            f"&for=zip%20code%20tabulation%20area:{zip_code}"
+            f"&key={CENSUS_API_KEY}"
+        )
+        
         response = requests.get(url)
-
         data = response.json()
+          
+        # Print entire response for debugging
+        st.write(f"### Raw Census Response for ZIP `{zip_code}`")
+        st.json(data)
 
-        # Convert API data to dict {zip: population}
-        # Example row: ["P1_001N", "NAME", "zip code tabulation area"]
-        headers = data[0]
-        rows = data[1:]
-        pop_data = {}
-        for row in rows:
-            population = int(row[0])
-            zip_code = row[2]
-            pop_data[zip_code] = population
+        population = int(data[1][0])  # Extract population field
+        return population
 
-        with open(CENSUS_DATA_FILE, "w") as f:
-            json.dump(pop_data, f, indent=2)
+    except Exception:
+        st.write(f"No data for ZIP `{zip_code}`")
+       
+        return 0  # if any error, treat as 0 population
 
-        st.success(f"✅ Census data saved locally with {len(pop_data)} ZIP codes.")
-        return pop_data
-
-    except Exception as e:
-        st.error(f"❌ Error fetching Census data: {e}")
-        return {}
-    
-# @st.cache_data(show_spinner=False)
-# def get_competitor_count(zip_code):
-#     """
-#     Get competitor count for a ZIP code.
-#     1️⃣ Checks cached_results.json first.
-#     2️⃣ If not found, generates random count (0–4), saves it to cache, and returns it.
-#     """
-#     cache = {}
-
-#     # Load existing cache safely
-#     if os.path.exists(CACHED_RESULTS_FILE):
-#         try:
-#             with open(CACHED_RESULTS_FILE, "r") as f:
-#                 content = f.read().strip()
-#                 if content:
-#                     cache = json.loads(content)
-#         except json.JSONDecodeError:
-#             st.warning("⚠️ cached_results.json is invalid or empty — resetting cache.")
-#             cache = {}
-
-#     # Return cached value if found
-#     if zip_code in cache:
-#         return cache[zip_code]
-
-#     # Generate new random value
-#     competitor_count = random.randint(0, 4)
-#     cache[zip_code] = competitor_count
-
-#     # Write back safely (atomic write)
-#     temp_file = CACHED_RESULTS_FILE + ".tmp"
-#     with open(temp_file, "w") as f:
-#         json.dump(cache, f, indent=2)
-#     os.replace(temp_file, CACHED_RESULTS_FILE)
-
-#     return competitor_count
-
-def get_competitor_count(zip_code):
-    """
-    Returns competitor count for a given ZIP code.
-    - If found in cached_results.json, returns that value.
-    - Otherwise, generates a random value between 0–4.
-    """
-    cache_file = "cached_results.json"
-
-    # Load the cache if it exists and is valid
-    cache = {}
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, "r") as f:
-                content = f.read().strip()
-                if content:
-                    cache = json.loads(content)
-        except json.JSONDecodeError:
-            print("⚠️ cached_results.json is invalid, skipping cache read.")
-            cache = {}
-
-    # Check if ZIP is present
-    if str(zip_code) in cache:
-        return cache[str(zip_code)]
-
-    # If not found, generate random count
-    return random.randint(0, 4)
-
-
-# def ai_call_simulation(lead):
-#     """Simulated AI call agent deciding if lead is 'interested'."""
-#     score = random.uniform(0, 1)
-#     return "Interested" if score > 0.4 else "Not Interested"
 
 # -----------------------------
 # Main Logic
 # -----------------------------
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
-    st.markdown("### 📋 Uploaded Leads Preview")
+    st.markdown("### 📋 Uploaded ZIP Code Preview")
     st.dataframe(df, use_container_width=True)
 
-    required_cols = ["zip_code"]
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        st.error(f"❌ Missing required columns: {', '.join(missing)}")
+    if "zip_code" not in df.columns:
+        st.error("❌ Excel must contain a 'zip_code' column.")
         st.stop()
 
-    # -----------------------------
-    # Load Census Population Data Once
-    # -----------------------------
-    census_data = fetch_and_store_census_data()
-    if not census_data:
-        st.error("❌ Could not load Census data.")
-        st.stop()
-
-    # Map population from pre-fetched census data
+    # Ensure 5-digit zero-padded ZIP codes
     df["zip_code"] = df["zip_code"].astype(str).str.zfill(5)
-    df["Population"] = df["zip_code"].map(census_data).fillna(0).astype(int)
 
-    # Add competitors & AI call simulation
-    df["Competitors"] = df["zip_code"].apply(get_competitor_count)
-    # df["AI_Call_Status"] = df.apply(ai_call_simulation, axis=1)
+    # Fetch Census population for each ZIP
+    st.info("📡 Fetching population for each ZIP code...")
+    df["Population"] = df["zip_code"].apply(get_population)
 
-    # Filtering
-    df["RejectedReason"] = ""
-    df["Qualified"] = True
-
-    for i, row in df.iterrows():
-        reasons = []
-        if row["Population"] < POP_THRESHOLD:
-            reasons.append("Low population")
-        if row["Competitors"] > COMPETITOR_THRESHOLD:
-            reasons.append("High market saturation")
-        # if row["AI_Call_Status"] != "Interested":
-        #     reasons.append("Low interest")
-        if "State" in df.columns and row["State"] in DISALLOWED_STATES:
-            reasons.append("State not allowed")
-
-        if reasons:
-            df.at[i, "Qualified"] = False
-            df.at[i, "RejectedReason"] = ", ".join(reasons)
+    # Qualification Rule
+    df["Qualified"] = df["Population"] >= POP_THRESHOLD
+    df["RejectedReason"] = df.apply(
+        lambda row: "Low population" if not row["Qualified"] else "",
+        axis=1
+    )
 
     qualified = df[df["Qualified"] == True]
     rejected = df[df["Qualified"] == False]
 
     # -----------------------------
-    # Results Tabs
+    # Tabs for Results
     # -----------------------------
-    st.markdown("---")
-    st.subheader("📊 Lead Evaluation Results")
-
     tab1, tab2 = st.tabs(["✅ Qualified Leads", "❌ Rejected Leads"])
 
     with tab1:
         st.success(f"Qualified Leads: {len(qualified)}")
         st.dataframe(qualified, use_container_width=True)
-        st.download_button(
-            "📥 Download Qualified Leads",
-            qualified.to_csv(index=False),
-            "qualified_leads.csv",
-            mime="text/csv"
-        )
 
     with tab2:
         st.warning(f"Rejected Leads: {len(rejected)}")
         st.dataframe(rejected, use_container_width=True)
-        st.download_button(
-            "📥 Download Rejected Leads",
-            rejected.to_csv(index=False),
-            "rejected_leads.csv",
-            mime="text/csv"
-        )
 
     # -----------------------------
     # Summary Metrics
     # -----------------------------
     st.markdown("---")
-    st.subheader("📈 Summary Insights")
+    st.subheader("📊 Summary Metrics")
 
     total = len(df)
     approved = len(qualified)
     rejection_rate = round((total - approved) / total * 100, 2)
     avg_population = int(df["Population"].mean())
-    avg_competitors = round(df["Competitors"].mean(), 2)
 
-    with st.container():
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Leads", total)
-        col2.metric("Qualified Leads", approved)
-        col3.metric("Rejection Rate", f"{rejection_rate}%")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total ZIP Codes", total)
+    col2.metric("Qualified", approved)
+    col3.metric("Rejection Rate", f"{rejection_rate}%")
 
-        col1.metric("Avg Population (ZIP)", avg_population)
-        col2.metric("Avg Competitors per ZIP", avg_competitors)
-        col3.metric("Projected ROI Uplift", f"{round((approved/total)*100*2, 2)}%")
-        st.markdown('</div>', unsafe_allow_html=True)
-
+    col1.metric("Avg Population", avg_population)
 else:
-    st.info("⬆️ Please upload an Excel file to begin.")
+    st.info("⬆️ Please upload an Excel file to continue.")
