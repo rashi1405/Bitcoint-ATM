@@ -27,6 +27,7 @@ CENSUS_API_KEY = os.getenv("CENSUS_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 BLENDED_TRANSACTIONS_THRESHOLD = 10000
 POP_DENSITY_THRESHOLD = 400
+MIN_DAILY_HOURS = 10  # Minimum daily operating hours filter
 
 # --------------------------------------------------
 # GOOGLE PLACE TYPES TO SEARCH
@@ -144,7 +145,7 @@ def fetch_zip_data(zip_code):
     }
 
 # --------------------------------------------------
-# NEW: Fetch Bitcoin ATMs/businesses for a location
+# NEW: Fetch Bitcoin ATMs/businesses for a location (DISPLAY ONLY - NO DETAILS)
 # --------------------------------------------------
 def get_bitcoin_locations(lat, lng, radius=1600):
     """
@@ -161,10 +162,8 @@ def get_bitcoin_locations(lat, lng, radius=1600):
     
     for r in res.get("results", []):
         results.append({
-            "place_id": r.get("place_id"),
             "name": r.get("name"),
             "address": r.get("vicinity"),
-            "type": "bitcoin",
             "rating": r.get("rating", "N/A"),
         })
     
@@ -214,6 +213,50 @@ def get_place_details(place_id):
 
     res = requests.get(url).json()
     return res.get("result", {})
+
+# --------------------------------------------------
+# Calculate daily operating hours from opening_hours
+# --------------------------------------------------
+def calculate_daily_hours(opening_hours):
+    """
+    Calculates the average daily operating hours from Google Places opening_hours data.
+    Returns average hours per day or 0 if data unavailable.
+    """
+    try:
+        if not opening_hours or "periods" not in opening_hours:
+            return 0
+        
+        periods = opening_hours.get("periods", [])
+        if not periods:
+            return 0
+        
+        # If open 24/7
+        if len(periods) == 1 and "close" not in periods[0]:
+            return 24
+        
+        daily_hours = []
+        
+        for period in periods:
+            if "open" in period and "close" in period:
+                open_time = period["open"].get("time", "0000")
+                close_time = period["close"].get("time", "0000")
+                
+                # Convert time strings to hours
+                open_hour = int(open_time[:2]) + int(open_time[2:]) / 60
+                close_hour = int(close_time[:2]) + int(close_time[2:]) / 60
+                
+                # Handle cases where close time is next day (e.g., open until 2 AM)
+                if close_hour < open_hour:
+                    close_hour += 24
+                
+                hours = close_hour - open_hour
+                daily_hours.append(hours)
+        
+        # Return average daily hours
+        return round(sum(daily_hours) / len(daily_hours), 2) if daily_hours else 0
+    
+    except Exception as e:
+        return 0
 
 # --------------------------------------------------
 # Scrape website for owner emails / phones
@@ -367,13 +410,13 @@ if uploaded_file:
     col3.metric("Total Cities", df_processed["City"].nunique())
     
     # --------------------------------------------------
-    # ORIGINAL FEATURE: PROCESS QUALIFIED ZIP CODES FOR BUSINESSES (INCLUDING BITCOIN ATMs)
+    # PROCESS QUALIFIED ZIP CODES FOR BUSINESSES
     # --------------------------------------------------
     if len(qualified) > 0 and GOOGLE_API_KEY and GOOGLE_API_KEY != "":
         st.markdown("---")
-        st.subheader("📍 Fetch Businesses + Bitcoin ATMs + Owner Details for Qualified ZIPs")
+        st.subheader("🔍 Fetch Businesses + Owner Details for Qualified ZIPs")
         
-        if st.button("🚀 Start Business Search (Includes Bitcoin ATMs)", type="primary"):
+        if st.button("🚀 Start Business Search", type="primary"):
             all_results = []
             
             business_progress = st.progress(0)
@@ -400,15 +443,17 @@ if uploaded_file:
                     business_progress.progress((idx + 1) / total_qualified)
                     continue
                 
+                # Fetch Bitcoin ATM locations (DISPLAY ONLY - NO DETAIL FETCHING)
+                bitcoin_df = get_bitcoin_locations(lat, lng)
+                if len(bitcoin_df) > 0:
+                    st.write(f"📍 **Bitcoin Locations Found: {len(bitcoin_df)}** (info only)")
+                    st.dataframe(bitcoin_df, use_container_width=True)
+                
                 # Fetch nearby businesses (regular categories)
                 poi_df = get_pois(lat, lng)
+                st.write(f"Found {len(poi_df)} regular businesses")
                 
-                # Fetch Bitcoin ATMs/locations
-                bitcoin_df = get_bitcoin_locations(lat, lng)
-                
-                st.write(f"Found {len(poi_df)} regular businesses + {len(bitcoin_df)} Bitcoin locations")
-                
-                # Process regular businesses
+                # Process regular businesses ONLY (exclude Bitcoin ATMs from detail fetching)
                 if len(poi_df) > 0:
                     st.dataframe(poi_df, use_container_width=True)
                     
@@ -417,6 +462,15 @@ if uploaded_file:
                         try:
                             details = get_place_details(poi["place_id"])
                             website = details.get("website")
+                            opening_hours = details.get("opening_hours")
+                            
+                            # Calculate daily operating hours
+                            daily_hours = calculate_daily_hours(opening_hours)
+                            
+                            # Skip businesses that don't meet minimum hours requirement
+                            if daily_hours < MIN_DAILY_HOURS:
+                                # st.write(f"⏰ Skipping {poi['name']} - Only open {daily_hours} hours/day (minimum {MIN_DAILY_HOURS} required)")
+                                continue
                             
                             # Scrape owner info if website exists
                             owner_data = scrape_owner_info(website) if website else {"emails": [], "phones": [], "owner_lines": []}
@@ -428,6 +482,7 @@ if uploaded_file:
                                 "Business Name": poi["name"],
                                 "Address": poi["address"],
                                 "Category": poi["type"],
+                                "Daily Hours": daily_hours,
                                 "Phone": details.get("formatted_phone_number"),
                                 "Website": website,
                                 "Owner Emails": ", ".join(owner_data["emails"]) if owner_data["emails"] else "",
@@ -440,50 +495,17 @@ if uploaded_file:
                         except Exception as e:
                             st.write(f"⚠️ Error fetching details for {poi['name']}: {str(e)}")
                 
-                # Process Bitcoin ATM locations
-                if len(bitcoin_df) > 0:
-                    st.write(f"**Bitcoin Locations Found:**")
-                    st.dataframe(bitcoin_df, use_container_width=True)
-                    
-                    # Fetch details for each Bitcoin location
-                    for _, btc in bitcoin_df.iterrows():
-                        try:
-                            details = get_place_details(btc["place_id"])
-                            website = details.get("website")
-                            
-                            # Scrape owner info if website exists
-                            owner_data = scrape_owner_info(website) if website else {"emails": [], "phones": [], "owner_lines": []}
-                            
-                            all_results.append({
-                                "ZIP": zip_code,
-                                "City": row["City"],
-                                "State": row["State"],
-                                "Business Name": btc["name"],
-                                "Address": btc["address"],
-                                "Category": "bitcoin_atm",
-                                "Phone": details.get("formatted_phone_number"),
-                                "Website": website,
-                                "Owner Emails": ", ".join(owner_data["emails"]) if owner_data["emails"] else "",
-                                "Owner Phones (Scraped)": ", ".join(owner_data["phones"]) if owner_data["phones"] else "",
-                                "Owner Info Lines": " | ".join(owner_data["owner_lines"]) if owner_data["owner_lines"] else ""
-                            })
-                            
-                            # Small delay to avoid rate limiting
-                            time.sleep(0.3)
-                        except Exception as e:
-                            st.write(f"⚠️ Error fetching details for {btc['name']}: {str(e)}")
-                
                 business_progress.progress((idx + 1) / total_qualified)
                 time.sleep(0.5)  # Delay between ZIPs
             
             business_progress.empty()
             
-            # Display final results
+            # Display final results (EXCLUDING BITCOIN ATMs)
             if len(all_results) > 0:
                 final_df = pd.DataFrame(all_results)
                 
-                st.markdown("## 🏁 Final Results (All Businesses + Bitcoin ATMs + Owner Info)")
-                st.success(f"Found {len(final_df)} total businesses (including Bitcoin ATMs) across {len(qualified)} qualified ZIP codes")
+                st.markdown("## 🎯 Final Results (Regular Businesses Only - Bitcoin ATMs Excluded)")
+                st.success(f"Found {len(final_df)} total businesses across {len(qualified)} qualified ZIP codes")
                 
                 # Show breakdown by category
                 st.write("**Breakdown by Category:**")
@@ -548,6 +570,6 @@ else:
        - Blended Transactions (Population) ≥ 10,000
        - Population Density ≥ 400 people/sq mi
     4. Download qualified, rejected, or all data as CSV
-    5. **New Feature:** Search for Bitcoin ATMs and related businesses in qualified ZIPs
-    6. **Optional:** Add Google Maps API Key to search for other businesses in qualified ZIPs
+    5. **New Feature:** View Bitcoin ATM locations in qualified ZIPs (informational only)
+    6. **Business Search:** Fetch detailed contact info for non-Bitcoin businesses in qualified ZIPs
     """)
